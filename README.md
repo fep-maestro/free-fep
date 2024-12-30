@@ -1,4 +1,4 @@
-Python package for automation of Gromacs Free Energy computation and submission on local PC or SLURM cliuster.
+Python package for automation of Gromacs Free Energy computation and its submission on local PC or SLURM cluster.
 Support several kind of jobs:
 - Molecular dynamics (MD) in gas, liquid, or protein phase.
 - Free energy perturbation (FEP) MD simulation of alchemical transition in gas, liquid, or protein
