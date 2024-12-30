@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+# Created 2024
+"""
+Package for automation of Gromacs Free Energy job preparation and submission. Support several kind of jobs:
+
+- Molecular dynamics (MD) in gas, liquid, or protein phase.
+- Free energy perturbation (FEP) MD simulation of alchemical transition in gas, liquid, or protein
+- Replica Exchange between FEP replicas in gas, liquid, or protein
+- Free energy analysis of TI/ReplEx simulation
+- Trajectory analysis of structure and energy components
+"""
+import sys
+import os
+import argparse
+import linecache
+import logging
+import textwrap
+
+
+import utils as utils
+import run_ti as run
+
+import toml
+# Read/Write TOML config  https://towardsdatascience.com/managing-deep-learning-models-easily-with-toml-configurations-fb680b9deabe#:~:text=The%20concept%20of%20a%20TOML,there%20are%20multiple%20nested%20levels.
+# YAML format verificator: https://yaml-online-parser.appspot.com/
+def load_global_config( filepath : str = "config_gmxpy.toml" ):
+    import munch
+    return munch.munchify( toml.load( filepath ) )
+def save_global_config( new_config , filepath : str = "project_config.toml" ):
+    with open( filepath , "w" ) as file:
+        toml.dump( new_config , file )
+
+def get_runs(args, run_path: str):
+    lines = []
+    if hasattr(args, 'lines') and args.lines:
+        lines = args.lines
+    elif utils.env.Lines:
+        lines = utils.env.Lines
+    elif hasattr(args, 'beginline') and hasattr(args, 'endline') and args.beginline and args.endline:
+        lines = list(range(args.beginline, args.endline + 1))
+    else:
+        run_filenm = os.path.basename(run_path)
+        logging.error(f'No line number is defined to get runs from the runFile {run_filenm}! Exit')
+        sys.exit()
+    return [linecache.getline(run_path, l) for l in lines]
+
+
+def run_submit_script(args):
+    # Set utils.env from command arguments and/or config file
+    # command line arguments have a priority over config file settings
+    utils.env.Init(args)
+    #utils.env.ProcessArgs(args)
+    #init_args(args)
+    #  Start MolDyn
+    run.RunMD(args)
+
+
+#def simulate(args):
+def DoByList(args):
+    ##
+    ## Wrapper for run_ti and run_md commands
+    ##
+    # Set utils.env from command arguments and/or config file
+    # command line arguments have a priority over config file settings
+    utils.env.Init(args)
+    #utils.env.ProcessArgs(args)
+    #init_args(args)
+
+    run_path = utils.env.runFile
+    #  Loop over runFile lines
+    run_records = get_runs(args, run_path)
+    for idx, record in enumerate(run_records):
+        tokens = record.split()
+        logging.debug(f'Selected run record: "{record}"')
+        if len(tokens) >= 3:
+            utils.env.TaskNm = tokens[0]  # TODO utils.env.jobNm = tokens[0] /? args.jobname = 'gmxTIall'
+            run.MD_TI(record, args)
+        else:
+            logging.error(f'The run record {str(idx)} \"{record}\" has wrong format or is empty. '
+                          f'The record must have 3 tokens or more. Record Format: runTitle lignm Phase')
+##
+## CLI PARSER
+##
+def parse_gmxFE_args(arguments=None):
+    # Argument parsing: https://dev.to/taikedz/ive-parked-my-side-projects-3o62
+    parser = argparse.ArgumentParser(
+        description=textwrap.dedent('''\
+        gmxFE is an automation package for running Free Energy and plain MD simulations with Gromacs software.
+        For deatils read Gromacs manual.'''),
+        add_help=True, formatter_class=argparse.RawDescriptionHelpFormatter)
+    
+    ##
+    ## Define Parent parsers for Subparsers
+    ##
+    # Common parameters for all sub-commands
+    par_for_all = argparse.ArgumentParser(add_help=False) # add_help=False is required for parent parsers
+
+    par_for_all.add_argument('-b', '--gmx', required=False,
+                               help='GMX binary path or executable command. Default: either "gmx" or "$CONDA_PREFIX/bin/gmx". '
+                                    '(if in conda package). "$GMXDIR" is defined in ')
+#                                    'SVN: SVN-checkout-dir/gmxfe/md/settings.ini or '
+#                                    'conda package: $CONDA_PREFIX/lib/python3/site-packages/gmxfe/md/settings.ini.')
+    par_for_all.add_argument('-b2', '--gmx_d', required=False,
+                               help='GMX double precision binary path or executable command. Default: either "gmx" or "$CONDA_PREFIX/bin/gmx". '
+                                    '(if in conda package). ')
+    par_for_all.add_argument('-v', '--verbose', required=False, action='store_true', default=False,
+                               help='Print out more diagnostics about the job preparation and submission. ')
+    par_for_all.add_argument('-d', '--debug', required=False, action='store_true', default=False,
+                               help='Print out extra verbose diagnostics  for debugging. ')
+
+    par_for_run = argparse.ArgumentParser(add_help=False)
+    pargrp_list = par_for_run.add_argument_group('pargrp_list')
+    # Group List parameters
+    pargrp_list.add_argument('-f', '--runfile', required=False,
+                                  help='Path to the File with list of runs to be computed.')
+    pargrp_list.add_argument('-bl', '--beginline', required=False, type=int,
+                                  help='Starting line number in the runFile from which the systems to be computed are read. '
+                                       'This option must be used with the `--endline` option.')
+    pargrp_list.add_argument('-el', '--endline', required=False, type=int,
+                                  help='Line Number in the runFile at which stop reading the systems to be computed. '
+                                       'It requires the use of --beginline option.')
+    pargrp_list.add_argument('-ls', '--lines', required=False, nargs='*', type=int,
+                                  help='List of space separated line numbers in runFile to read the systems to be computed. ')
+    # Hack to add mutually exclusive grooups: "g2._group_actions.append(arg_a)" https://stackoverflow.com/questions/17909294/python-argparse-mutual-exclusive-group
+    # excl_list = par_for_run.add_mutually_exclusive_group() # argparse will make sure that only one of the arguments in the mutually exclusive group was present on the command line
+    # excl_list.add_argument('-ls', '--lines', required=False, nargs='*', type=int,
+    #                               help='List of space separated line numbers in runFile to read the systems to be computed. ')
+    # excl_list.add_argument('-bl', '--beginline', required=False, type=int,
+    #                               help='Line Number in the runFile from which start reading the systems to be computed. '
+    #                                    'It requires the use of --endline option.')
+
+    par_for_run.add_argument('-res', '--joblist--donejobs--resfile', required=False,
+                                   help='ResFile (path) in which records with job_name, output location, date and etc are saved')
+    par_for_run.add_argument('-tmp', '--tmpdir', required=False,
+                                   help='TMPDIR to use for temporary GMX files. Better on fast disks '
+                                        'if you have different disk types in your system.')
+    # Options: https://support.schrodinger.com/s/article/1844
+    par_for_run.add_argument('-q', '--queue', required=False, default='none', choices=['none','slurm','pbs','sge'],
+                               help='Queue and job submission management system. Use option: \"slurm\", \"pbs\" or \"sge\" for SLURM, PBS or SGE queue/cluster management system, correspondigly;'
+                                    'or \"none\" to run the job without queue scheduling on the local node (default).')
+    par_for_run.add_argument('-qa', '--qargs', required=False, default='none', choices=['none','slurm','pbs','sge'],
+                               help='Arguments to be passed to the queue job submission commands. Use option: \"slurm\", \"pbs\" or \"sge\" for SLURM, PBS or SGE queue/cluster management system, correspondigly;'
+                                    'or \"none\" to run the job without queue scheduling on the local node (default).')
+    par_for_run.add_argument('-qaa', '--qaargs', required=False, 
+                             help='Arguments to be passed to the queue job submission command (sbatch or qsub)'
+                                  'The option is used only with --queue=(slurm|pbs|sge), ignored with --queue=none.' )
+    ##
+    ## USE --qargs to set all extra options and flags
+    ##
+    #  par_for_run.add_argument('-p', '--partition', required=False, 
+    #                             help='Partition name (on slurm) or queue name (on pbs or sge) for submiting jobs by cluster management system;'
+    #                                  'used only with --queue=(slurm|pbs|sge), ignored with --queue=none.' )
+    #  par_for_run.add_argument('-tl', '--timelimit', required=False, default='29-23',
+    #                                 help='Job time limit for cluster with Slurm. Default limit: 29 days 23 hours.')
+    #  par_for_run.add_argument('-mem', '--memory', required=False, default='100M',
+    #                                 help='Job memory limit per allocated CPU for cluster with Slurm job management system. ')
+    # TODO implement options to assign job to specific node/GPU in Slurm cluster env
+    par_for_run.add_argument('-nc', '--ncpu', required=False, type=int, default=1,
+                                   help='Number of CPU cores the job or each job\'s thread/replica (if ReplEx) will run on (default = 1 core).')
+    par_for_run.add_argument('-g', '--gpu', required=False, action='store_true', default=False,
+                               help='Use GPU for running the jobs')
+    par_for_run.add_argument('--mpi', required=False, nargs='?', type=int, default=0, const=1,
+                            help='''
+                            Run simulation in MPI environment when Replica Exchange (replex) of alchemical
+                            transition is set. All lambda points run in parallel MPI threads, so you need 
+                            OpenMPI environment.
+                            ''')
+
+    par_for_md = argparse.ArgumentParser(add_help=False)
+    par_for_md.add_argument('-c', '--config', required=False,
+                                   help='Path to gmxFE Config File which defines the compute system input file preparation. '
+                                        'See Manual.pdf')
+    # Group Path parameters
+    pargrp_path = par_for_md.add_argument_group('pargrp_path')
+    pargrp_path.add_argument('--topdir', required=False,
+                                  help='Path to a folder with topology and structure files relative to the current directory. '
+                                       'The folder is a single source of all TOP and PDB files required for simulation '
+                                       '(default = INPUT/TOP).')
+    pargrp_path.add_argument('--mdpdir', required=False,
+                                  help='Path to a folder with MDP template files relative to the current directory. '
+                                       'The folder is a single source of all MAP files required for simulation '
+                                       '(default = INPUT/MDP).')
+    pargrp_path.add_argument('-od', '--outdir', required=False,
+                                   help='Relative Path to output directory')
+    pargrp_path.add_argument('--outnm', required=False,
+                                  help='Name for mdrun output files (default = \"outnm\").')
+
+    par_for_md.add_argument('--solvcoor', required=False,
+                                  help='Full path to prepared solvent box for loading instead of box generation "on-the-fly". '
+                                       '!!Use with care - it applies to all jobs started from the runFile!!')
+    par_for_md.add_argument('--boxsize', required=False, nargs=3,
+                                  help='Rectangular Box Size (in Nanometers) for simulation in solvent or vaccum, three space separated numbers. ')
+
+    ##
+    ## Parameters specific fo TI jobs
+    ##
+    par_for_ti = argparse.ArgumentParser(add_help=False)
+    par_for_ti.add_argument('-ti', '--tidir', required=False,
+                                  help='Prefix to sub-folders for individual TI points (default = \"\").')
+
+    group_replex = par_for_ti.add_mutually_exclusive_group() # argparse will make sure that only one of the arguments in the mutually exclusive group was present on the command line
+    group_replex.add_argument('--lambdas', required=False, nargs='*',
+                            help='To run specific lambdas, put point numbers separated by space. '
+                                 'By default, run all points.')
+    group_replex.add_argument('--replex', required=False, nargs='?', type=int, default=0, const=1,
+                            help='''
+                            Run alchemical transition with the replica exchange (REX) method.  
+                            All lambda points run in parallel MPI threads, so you need OpenMPI environment.
+                            ''')
+    ##
+    ## Define subparsers for subcommands
+    ##
+    subparsers = parser.add_subparsers(title='Simulation types', description='gmxFE commands')
+    subparsers.required = True
+
+
+    parser_run_ti = subparsers.add_parser('run_ti', help='Run TI simulation for alchemical transformation/mutation of one molecule '
+                                                         'to another in gas, solvent, or protein to get '
+                                                         'solvation or absolute / relative binding free energy. Setup is based on config. ',
+                                          parents=[par_for_all, par_for_run, par_for_md, par_for_ti])
+    parser_run_md = subparsers.add_parser('run_md', help='Run MD simulation of ligand molecule in gas, solvent, or protein '
+                                                         'to get trajectory and dynamics. Setup is based on config. ',
+                                          parents=[par_for_all, par_for_run, par_for_md])
+
+    parser_run = subparsers.add_parser('run', help='Run any simulation with provided gmxFE submit script. '
+                                                   'Requires fully prepared compute folder. Path to files '
+                                                   'needed for simulation in the config should be absolute or relative '
+                                                   'to the config\'s location. ',
+                                          parents=[par_for_all, par_for_run])
+
+
+    parser_run_ti.set_defaults(func=DoByList, type='run_ti')
+    parser_run_md.set_defaults(func=DoByList, type='run_md')
+    parser_run.set_defaults   (func=run_submit_script)
+    # TODO: figure out for jobname and jobnm
+    parser_run_ti.add_argument('-j', '--name--jobname', required=False, default='gmxTIp',
+                                help='Job name to describe. Output folder name is constructed as "JOB_ID.jobname".')
+    parser_run_md.add_argument('-j', '--jobname', required=False, default='gmxMD',
+                            help='Job name to describe. Output folder name is constructed as "JOB_ID.jobname".')
+    parser_run.add_argument('-j', '--jobname', required=False, default='gmxRun',
+                            help='Job name to describe. Output folder name is constructed as "JOB_ID.jobname".')
+    return parser.parse_args(arguments)
+
+##########################################
+##
+##  START THE PROGRAM
+##
+##########################################
+if __name__ == '__main__':
+    # Parse CLI arguments
+    args = parse_gmxFE_args()
+    #args = parser.parse_args()
+    #print(args)
+
+    ##
+    ## init logging level and format: https://betterstack.com/community/guides/logging/how-to-start-logging-with-python/
+    ##
+    if args.debug:
+        logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s | %(module)s:%(funcName)s()')
+    elif args.verbose:
+        logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+    else:
+        logging.basicConfig(level=logging.WARNING, format='%(levelname)s: %(message)s | %(module)s')
+    # Call the specified module
+    args.func(args)
